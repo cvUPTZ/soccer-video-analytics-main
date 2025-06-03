@@ -1,5 +1,5 @@
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any # Added Dict, Any
 from pathlib import Path
 
 import cv2
@@ -13,6 +13,7 @@ from soccer.pass_event import Pass, PassEvent
 from soccer.player import Player
 from soccer.team import Team
 from config_loader import config
+from soccer.utils import get_bbox_center, round_tuple_coords, line_segments_intersect # Added line_segments_intersect
 
 # Default paths for board images, consider making these configurable
 DEFAULT_POSSESSION_BOARD_IMG_PATH = Path(config['paths']['possession_board_img'])
@@ -91,6 +92,66 @@ class Match:
         self.possession_background_img: Optional[PIL.Image.Image] = self._load_background_image(possession_board_img_path)
         self.passes_background_img: Optional[PIL.Image.Image] = self._load_background_image(passes_board_img_path)
 
+        self.player_positions_history: List[Dict[str, Any]] = []
+
+        # Load goal definitions
+        self.goal_definitions = config.get('pitch_layout', {}).get('goals', [])
+        self.goals_by_team: Dict[str, Dict[str, List[int]]] = {} # Stores {team_name: {'post1': [x,y], 'post2': [x,y]}} for the goal they ATTACK
+
+        if len(self.goal_definitions) == 2 and len(config.get('teams', [])) == 2:
+            # This assumes self.home and self.away are set based on the first two teams in config.teams
+            # A more robust mapping would use team names directly if available from earlier team loading.
+            # For now, using the assumption that self.home.name and self.away.name match config['teams'][0]['name'] and config['teams'][1]['name']
+
+            # Determine team names from the already instantiated self.home and self.away objects
+            # This is safer than re-accessing config['teams'] and assuming order.
+            # The Match instance receives Team objects, so we should use their names.
+
+            # We need to map which goal (by its defended_by_team_index) corresponds to self.home and self.away.
+            # Let's find which team in config.teams matches self.home and self.away
+
+            config_teams_data = config.get('teams', [])
+            home_team_name_from_config = None
+            away_team_name_from_config = None
+
+            if self.home and self.away: # Ensure home and away teams are set
+                # This logic assumes that the order of teams passed to Match constructor (home, away)
+                # corresponds to the order in config['teams'] if we want to use indices 0 and 1 from config.
+                # A better way is to match by name if the 'teams' in config has names 'Chelsea', 'Man City'
+                # and self.home/self.away also have these names.
+
+                # Simplified assumption: The first team in config.teams is one of (home/away), second is the other.
+                # And defended_by_team_index refers to this order.
+                team_0_cfg_name = config_teams_data[0]['name']
+                team_1_cfg_name = config_teams_data[1]['name']
+
+                for goal_def in self.goal_definitions:
+                    def_team_idx = goal_def.get('defended_by_team_index')
+                    goal_coords = {'post1': goal_def['post1'], 'post2': goal_def['post2']}
+
+                    if def_team_idx == 0: # Goal defended by team at index 0 in config.teams
+                        # The other team (index 1) attacks this goal.
+                        self.goals_by_team[team_1_cfg_name] = goal_coords
+                    elif def_team_idx == 1: # Goal defended by team at index 1 in config.teams
+                        # The other team (index 0) attacks this goal.
+                        self.goals_by_team[team_0_cfg_name] = goal_coords
+            else: # Should not happen if Match is initialized correctly
+                 print("Warning: Home or Away team not set in Match object during goal assignment.")
+
+        else:
+            print("Warning: Could not map goals to teams. Expected 2 goals and 2 teams in config for current auto-assignment logic.")
+            # self.goals_by_team will be empty, shot detection might not work.
+
+        # Load shot detection parameters
+        shot_config = config.get('shot_detection', {})
+        self.shot_speed_threshold_pps: float = shot_config.get('shot_speed_threshold_pps', 500.0)
+
+        # Initialize storage for shot attempts
+        self.shot_attempts_history: List[Dict[str, Any]] = [] # To store detected shot attempts
+
+        self.coord_transformations: Optional[Any] = None
+
+
     def _load_background_image(self, img_path_str: str) -> Optional[PIL.Image.Image]:
         img_path = Path(img_path_str)
         if not img_path.exists():
@@ -121,7 +182,8 @@ class Match:
             print(f"Error loading background image {img_path}: {e}")
             return None
 
-    def update(self, players: List[Player], ball: Optional[Ball]):
+    def update(self, players: List[Player], ball: Optional[Ball], coord_transformations: Optional[Any]): # Using Any for now
+        self.coord_transformations = coord_transformations # Store it
         self.update_possession_duration() # This still increments self.duration and active team's possession time
 
         if ball is None or ball.detection is None:
@@ -227,8 +289,106 @@ class Match:
 
 
         # Pass detection (original logic)
+
+        # --- Start of new block for recording player positions ---
+        if players: # Ensure there are players
+            for player_obj in players: # Changed variable name from 'player' to 'player_obj' to avoid conflict if 'player' is used elsewhere
+                if player_obj.detection and \
+                   player_obj.detection.absolute_points is not None and \
+                   player_obj.detection.data and \
+                   player_obj.detection.data.get('id') is not None:
+
+                    # Get absolute center of the player's bounding box
+                    # player_obj.detection.absolute_points is [[x1,y1],[x2,y2]]
+                    abs_center_float = get_bbox_center(player_obj.detection.absolute_points)
+                    if abs_center_float: # Ensure center calculation was successful
+                        abs_center_coords = round_tuple_coords(abs_center_float)
+
+                        history_entry = {
+                            'frame': self.duration, # self.duration is incremented in update_possession_duration
+                            'player_id': player_obj.detection.data.get('id'),
+                            'team_name': player_obj.team.name if player_obj.team else "Unknown",
+                            'position_abs_center': abs_center_coords
+                        }
+                        self.player_positions_history.append(history_entry)
+        # --- End of new block ---
+
+        # --- Shot Attempt Detection Logic ---
+        if self.current_ball_speed_abs > self.shot_speed_threshold_pps and \
+           self.ball and self.ball.center_abs is not None and \
+           self.previous_ball_center_abs is not None:
+
+            shooter_team_name = None
+            # Prioritize team in official possession, then controlling team
+            if self.team_possession:
+                shooter_team_name = self.team_possession.name
+            elif self.current_controlling_team: # Team that is currently controlling but not yet confirmed possession
+                shooter_team_name = self.current_controlling_team.name
+
+            if shooter_team_name:
+                target_goal_data = self.goals_by_team.get(shooter_team_name) # Goal this team attacks
+
+                if target_goal_data:
+                    curr_ball_pos_np = np.array(self.ball.center_abs)
+                    prev_ball_pos_np = np.array(self.previous_ball_center_abs) # Already stored as np.array
+
+                    goal_post1_np = np.array(target_goal_data['post1'])
+                    goal_post2_np = np.array(target_goal_data['post2'])
+
+                    is_shot_towards_goal = False
+                    if line_segments_intersect(prev_ball_pos_np, curr_ball_pos_np, goal_post1_np, goal_post2_np):
+                        is_shot_towards_goal = True
+
+                    if is_shot_towards_goal:
+                        shooter_player_id = None
+                        if self.closest_player and self.closest_player.team and self.closest_player.team.name == shooter_team_name:
+                            if self.closest_player.detection and self.closest_player.detection.data:
+                                 shooter_player_id = self.closest_player.detection.data.get('id')
+
+                        target_goal_id_str = "Unknown"
+                        for g_def in self.goal_definitions:
+                            if g_def['post1'] == target_goal_data['post1'] and g_def['post2'] == target_goal_data['post2']:
+                                target_goal_id_str = g_def.get('id', "Unknown")
+                                break
+
+                        shot_attempt = {
+                            'frame': self.duration,
+                            'shooter_team_name': shooter_team_name,
+                            'shooter_player_id': shooter_player_id,
+                            'ball_start_pos': prev_ball_pos_np.tolist(),
+                            'ball_current_pos': curr_ball_pos_np.tolist(),
+                            'ball_speed_pps': self.current_ball_speed_abs,
+                            'target_goal_id': target_goal_id_str,
+                            'target_goal_posts': {'post1': target_goal_data['post1'], 'post2': target_goal_data['post2']}
+                        }
+                        self.shot_attempts_history.append(shot_attempt)
+                        # print(f"Shot attempt recorded at frame {self.duration} by team {shooter_team_name}") # Optional debug
+        # --- End of Shot Attempt Detection Logic ---
+
         self.pass_event.update(closest_player=self.closest_player, ball=ball, ball_speed=self.current_ball_speed_abs)
         self.pass_event.process_pass()
+
+    def draw_shot_attempts(self, frame: PIL.Image.Image) -> PIL.Image.Image:
+        if self.coord_transformations is None:
+            return frame
+
+        draw = PIL.ImageDraw.Draw(frame)
+
+        for shot_attempt in self.shot_attempts_history:
+            # Only draw shots detected in the current frame for non-persistent visualization
+            if shot_attempt['frame'] == self.duration:
+                abs_start_pos = np.array(shot_attempt['ball_start_pos'])
+                abs_current_pos = np.array(shot_attempt['ball_current_pos'])
+
+                rel_start_pos_list = self.coord_transformations.abs_to_rel(np.array([abs_start_pos]))
+                rel_current_pos_list = self.coord_transformations.abs_to_rel(np.array([abs_current_pos]))
+
+                if rel_start_pos_list is not None and rel_current_pos_list is not None:
+                    rel_start_pos = tuple(map(int, rel_start_pos_list[0]))
+                    rel_current_pos = tuple(map(int, rel_current_pos_list[0]))
+
+                    draw.line([rel_start_pos, rel_current_pos], fill=(255, 255, 0, 200), width=3) # Yellow, slightly transparent
+        return frame
 
     def change_team_possession(self, team: Optional[Team]):
         self.team_possession = team

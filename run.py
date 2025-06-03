@@ -19,6 +19,7 @@ from soccer import Match, Player, Team
 from config_loader import config # Add this import
 from soccer.draw import AbsolutePath
 from soccer.pass_event import Pass
+from visualizations import generate_player_heatmap # Added import
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -143,42 +144,86 @@ for i, frame in enumerate(video):
     # Match update
     ball = get_main_ball(ball_detections)
     players = Player.from_detections(detections=players_detections, teams=teams)
-    match.update(players, ball)
+    match.update(players, ball, coord_transformations) # Add coord_transformations here
 
     # Draw
-    frame = PIL.Image.fromarray(frame)
+    frame_pil = PIL.Image.fromarray(frame) # Changed variable name for clarity
+    frame_pil = frame_pil.convert("RGBA") # Ensure RGBA for drawing with alpha
 
     if args.possession:
-        frame = Player.draw_players(
-            players=players, frame=frame, confidence=False, id=True
+        frame_pil = Player.draw_players(
+            players=players, frame=frame_pil, confidence=False, id=True
         )
 
-        frame = path.draw(
-            img=frame,
+        frame_pil = path.draw(
+            img=frame_pil,
             detection=ball.detection,
             coord_transformations=coord_transformations,
             color=match.team_possession.color,
         )
 
-        frame = match.draw_possession_counter(
-            frame, counter_background=possession_background, debug=False
+        frame_pil = match.draw_possession_counter(
+            frame_pil, counter_background=possession_background, debug=False
         )
 
         if ball:
-            frame = ball.draw(frame)
+            frame_pil = ball.draw(frame_pil)
 
     if args.passes:
         pass_list = match.passes
 
-        frame = Pass.draw_pass_list(
-            img=frame, passes=pass_list, coord_transformations=coord_transformations
+        frame_pil = Pass.draw_pass_list(
+            img=frame_pil, passes=pass_list, coord_transformations=coord_transformations
         )
 
-        frame = match.draw_passes_counter(
-            frame, counter_background=passes_background, debug=False
+        frame_pil = match.draw_passes_counter(
+            frame_pil, counter_background=passes_background, debug=False
         )
 
-    frame = np.array(frame)
+    # Draw shot attempts
+    frame_pil = match.draw_shot_attempts(frame_pil)
+
+    frame = np.array(frame_pil) # Convert back to numpy array for OpenCV
 
     # Write video
     video.write(frame)
+# This section was already part of the replacement block above.
+# The diff tool might sometimes show it this way if the search block is small
+# and the replace block is large and contains the search block's lines.
+# No further changes needed for this part based on the provided diff.
+
+print("Video processing complete. Generating heatmaps...")
+
+if match.player_positions_history:
+    video_width = int(video.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    video_height = int(video.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    img_dimensions = (video_width, video_height)
+
+    # Generate overall heatmap
+    generate_player_heatmap(
+        positions_history=match.player_positions_history,
+        output_path="heatmap_all_players.png",
+        img_size=img_dimensions
+    )
+
+    # Generate heatmap for home team
+    if match.home: # Ensure home team exists
+        generate_player_heatmap(
+            positions_history=match.player_positions_history,
+            output_path=f"heatmap_{match.home.name.lower().replace(' ', '_')}.png",
+            filter_team_name=match.home.name,
+            img_size=img_dimensions
+        )
+
+    # Generate heatmap for away team
+    if match.away: # Ensure away team exists
+        generate_player_heatmap(
+            positions_history=match.player_positions_history,
+            output_path=f"heatmap_{match.away.name.lower().replace(' ', '_')}.png",
+            filter_team_name=match.away.name,
+            img_size=img_dimensions
+        )
+
+    print("Heatmap generation complete.")
+else:
+    print("No player position history recorded. Skipping heatmap generation.")

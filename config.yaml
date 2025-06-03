@@ -94,3 +94,19 @@ hsv_filters:
 # is mostly for description within the YAML. The HSVClassifier primarily uses
 # the lower_hsv and upper_hsv values. The 'name' of the overall filter (e.g., "Chelsea")
 # is crucial for matching with team objects.
+
+pitch_layout:
+  goals:
+    - id: "goal_A" # Generic ID
+      post1: [50, 300]   # Absolute coordinates [x,y] for one post
+      post2: [50, 420]   # Absolute coordinates [x,y] for the other post
+                        # This defines a vertical goal line at x=50, from y=300 to y=420
+      defended_by_team_index: 0 # Index (0 or 1) from the config.teams list
+    - id: "goal_B"
+      post1: [1870, 300] # Example for a 1920-width video's right side
+      post2: [1870, 420]
+      defended_by_team_index: 1 # Index (0 or 1) from the config.teams list
+
+shot_detection:
+  shot_speed_threshold_pps: 500 # Min speed for a ball movement to be considered a shot attempt (pixels/sec)
+  # Add other shot related thresholds later if needed
