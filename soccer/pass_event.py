@@ -7,6 +7,7 @@ from soccer.ball import Ball
 from soccer.draw import AbsolutePath, PathPoint
 from soccer.player import Player
 from soccer.team import Team
+from ..config_loader import config
 
 
 class Pass:
@@ -206,28 +207,29 @@ class Pass:
 
 
 class PassEvent:
-    def __init__(self) -> None:
+    def __init__(self, min_pass_speed_pps: float = 150.0) -> None: # Add argument with default
         self.ball = None
         self.closest_player = None
         self.init_player_with_ball = None
         self.last_player_with_ball = None
         self.player_with_ball_counter = 0
-        self.player_with_ball_threshold = 3
-        self.player_with_ball_threshold_dif_team = 4
 
-    def update(self, closest_player: Player, ball: Ball) -> None:
+        # Load pass event thresholds from config (already done in a previous step for these two)
+        pass_event_config = config.get('ui_constants', {}).get('pass_event', {})
+        self.player_with_ball_threshold: int = pass_event_config.get('player_with_ball_threshold', 3)
+        self.player_with_ball_threshold_dif_team: int = pass_event_config.get('player_with_ball_threshold_different_team', 4)
+
+        # New attributes for ball speed check
+        self.min_pass_speed_pps: float = min_pass_speed_pps
+        self.current_ball_speed: float = 0.0
+
+    def update(self, closest_player: Player, ball: Ball, ball_speed: float) -> None: # Add ball_speed argument
         """
-        Updates the player with the ball counter
-
-        Parameters
-        ----------
-        closest_player : Player
-            The closest player to the ball
-        ball : Ball
-            Ball class
+        Updates the player with the ball counter and current ball speed.
         """
         self.ball = ball
         self.closest_player = closest_player
+        self.current_ball_speed = ball_speed # Store ball speed
 
         same_id = Player.have_same_id(self.init_player_with_ball, closest_player)
 
@@ -306,7 +308,15 @@ class PassEvent:
             )
 
             if valid_pass:
-                # Generate new pass
+                # Add ball speed check here
+                if self.current_ball_speed < self.min_pass_speed_pps:
+                    # Ball is moving too slow to be considered a pass in this context
+                    # Update last_player_with_ball because control did transfer to a teammate,
+                    # but don't record it as a pass.
+                    self.last_player_with_ball = self.closest_player # Still update who has the ball
+                    return # Exit without generating a pass
+
+                # Generate new pass (original logic)
                 team = self.closest_player.team
                 start_pass = self.last_player_with_ball.closest_foot_to_ball_abs(
                     self.ball

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from inference.base_classifier import BaseClassifier
-from inference.colors import all
+# Removed: from inference.colors import all
 
 
 class HSVClassifier(BaseClassifier):
@@ -373,17 +373,30 @@ class HSVClassifier(BaseClassifier):
         if img is None:
             raise ValueError("Image can't be None")
 
-        filters = copy.deepcopy(self.filters)
+        filters_copy = copy.deepcopy(self.filters) # Work on a copy to store counts per prediction run
 
-        for i, filter in enumerate(filters):
-            for color in filter["colors"]:
-                color = self.add_non_black_pixels_count_in_filter(img, color)
-                if "non_black_pixels_count" not in filter:
-                    filter["non_black_pixels_count"] = 0
-                filter["non_black_pixels_count"] += color["non_black_pixels_count"]
+        for team_filter in filters_copy: # team_filter is for one team, e.g. {"name": "Chelsea", "colors": [...]}
+            team_filter["non_black_pixels_count"] = 0.0 # Initialize for each team filter, use float for weighted sum
+
+            for color_config_in_team in team_filter["colors"]:
+                # color_config_in_team is like {"name": "chelsea_blue", "lower_hsv": ..., "upper_hsv": ..., "weight": ...}
+
+                # This method adds "non_black_pixels_count" to color_config_in_team
+                self.add_non_black_pixels_count_in_filter(img, color_config_in_team)
+
+                weight = color_config_in_team.get("weight", 1.0)
+                pixels_for_this_color = color_config_in_team.get("non_black_pixels_count", 0)
+
+                team_filter["non_black_pixels_count"] += pixels_for_this_color * weight
+
+        if not filters_copy: # Handle empty filters_copy case
+            # This might happen if self.filters was empty to begin with.
+            # Depending on desired behavior, return a default or raise error.
+            # For now, assume self.filters is populated. If not, max() on empty sequence error.
+            return "Unknown" # Or some other default class name
 
         max_non_black_pixels_filter = max(
-            filters, key=lambda x: x["non_black_pixels_count"]
+            filters_copy, key=lambda x: x["non_black_pixels_count"]
         )
 
         return max_non_black_pixels_filter["name"]
@@ -437,9 +450,21 @@ class HSVClassifier(BaseClassifier):
         """
         transformed_imgs = {}
 
-        colors_to_transform = all
-        if colors:
-            colors_to_transform = colors
+        colors_to_transform = []
+        if not colors: # If colors argument is not provided
+            # If no specific colors are given, maybe this function should raise an error
+            # or collect all unique colors from self.filters if that's desired.
+            # For now, let's make it so it does nothing if no colors are passed.
+            # Or, alternatively, it could iterate through all colors defined in self.filters.
+            # Let's go with iterating through all colors in self.filters for now.
+            for f in self.filters:
+                for color_detail in f['colors']:
+                    # Need to avoid duplicates if colors have same name but different HSV in different filters (unlikely with current config)
+                    # We'll use the actual color dict which includes HSV values
+                    if color_detail not in colors_to_transform: # This checks for dict equality
+                         colors_to_transform.append(color_detail)
+        else:
+            colors_to_transform = colors # Use provided colors
 
         for color in colors_to_transform:
             transformed_imgs[color["name"]] = self.crop_filter_and_blur_img(img, color)

@@ -12,29 +12,39 @@ from soccer.draw import Draw
 from soccer.pass_event import Pass, PassEvent
 from soccer.player import Player
 from soccer.team import Team
+from config_loader import config
 
 # Default paths for board images, consider making these configurable
-DEFAULT_POSSESSION_BOARD_IMG_PATH = Path("./images/possession_board.png")
-DEFAULT_PASSES_BOARD_IMG_PATH = Path("./images/passes_board.png")
+DEFAULT_POSSESSION_BOARD_IMG_PATH = Path(config['paths']['possession_board_img'])
+DEFAULT_PASSES_BOARD_IMG_PATH = Path(config['paths']['passes_board_img'])
 
 class Match:
-    # Configuration constants
-    DEFAULT_POSSESSION_COUNTER_THRESHOLD = 20
-    DEFAULT_BALL_DISTANCE_THRESHOLD = 45 # pixels
-    BAR_HEIGHT = 29
-    BAR_WIDTH = 310
-    BAR_RATIO_MIN_PROTECTION = 0.07
-    BAR_RATIO_MAX_PROTECTION = 0.93
-    BAR_TEXT_MIN_RATIO_DISPLAY = 0.15 # Min ratio to display text for home team
-    BAR_TEXT_MAX_RATIO_DISPLAY = 0.85 # Max ratio to display text for away team (1.0 - 0.15)
-    COUNTER_RECT_HEIGHT = 31
-    COUNTER_RECT_WIDTH = 150
-    COUNTER_RECT_SPACING = 10
-    COUNTER_BACKGROUND_OFFSET_X = 540
-    COUNTER_BACKGROUND_OFFSET_Y = 40
-    COUNTER_ELEMENTS_ORIGIN_X_OFFSET = 35
-    COUNTER_ELEMENTS_ORIGIN_Y_OFFSET = 130
-    COUNTER_BAR_ORIGIN_Y_OFFSET = 195
+    # Configuration constants from config.yaml
+    ui_cfg = config['ui_constants']
+    match_defaults_cfg = ui_cfg['match_defaults']
+    score_bar_cfg = ui_cfg['score_bar']
+    counter_rect_cfg = ui_cfg['counter_rect']
+    counter_layout_cfg = ui_cfg['counter_layout']
+
+    DEFAULT_POSSESSION_COUNTER_THRESHOLD = match_defaults_cfg['possession_counter_threshold']
+    DEFAULT_BALL_DISTANCE_THRESHOLD = match_defaults_cfg['ball_distance_threshold'] # pixels
+
+    BAR_HEIGHT = score_bar_cfg['height']
+    BAR_WIDTH = score_bar_cfg['width']
+    BAR_RATIO_MIN_PROTECTION = score_bar_cfg['ratio_min_protection']
+    BAR_RATIO_MAX_PROTECTION = score_bar_cfg['ratio_max_protection']
+    BAR_TEXT_MIN_RATIO_DISPLAY = score_bar_cfg['text_min_ratio_display_home'] # Min ratio to display text for home team
+    BAR_TEXT_MAX_RATIO_DISPLAY = score_bar_cfg['text_max_ratio_display_away'] # Max ratio to display text for away team
+
+    COUNTER_RECT_HEIGHT = counter_rect_cfg['height']
+    COUNTER_RECT_WIDTH = counter_rect_cfg['width']
+    COUNTER_RECT_SPACING = counter_rect_cfg['spacing']
+
+    COUNTER_BACKGROUND_OFFSET_X = counter_layout_cfg['background_offset_x']
+    COUNTER_BACKGROUND_OFFSET_Y = counter_layout_cfg['background_offset_y']
+    COUNTER_ELEMENTS_ORIGIN_X_OFFSET = counter_layout_cfg['elements_origin_x_offset']
+    COUNTER_ELEMENTS_ORIGIN_Y_OFFSET = counter_layout_cfg['elements_origin_y_offset']
+    COUNTER_BAR_ORIGIN_Y_OFFSET = counter_layout_cfg['bar_origin_y_offset']
 
 
     def __init__(
@@ -42,25 +52,40 @@ class Match:
         home: Team, 
         away: Team, 
         fps: int = 30,
-        possession_counter_threshold: int = DEFAULT_POSSESSION_COUNTER_THRESHOLD,
-        ball_distance_threshold: int = DEFAULT_BALL_DISTANCE_THRESHOLD,
-        possession_board_img_path: str = str(DEFAULT_POSSESSION_BOARD_IMG_PATH),
-        passes_board_img_path: str = str(DEFAULT_PASSES_BOARD_IMG_PATH),
+        possession_counter_threshold: int = DEFAULT_POSSESSION_COUNTER_THRESHOLD, # Uses class/module level var
+        ball_distance_threshold: int = DEFAULT_BALL_DISTANCE_THRESHOLD, # Uses class/module level var
+        possession_board_img_path: str = str(DEFAULT_POSSESSION_BOARD_IMG_PATH), # Uses module level var
+        passes_board_img_path: str = str(DEFAULT_PASSES_BOARD_IMG_PATH), # Uses module level var
     ):
         self.duration: int = 0
         self.home: Team = home
         self.away: Team = away
         self.team_possession: Optional[Team] = home # Start with home possession or None
-        self.current_team: Optional[Team] = home    # Team currently closest to ball (before possession change)
-        self.possession_counter: int = 0
+        # self.current_team: Optional[Team] = home    # Removed, replaced by current_controlling_team
+        self.possession_counter: int = 0 # Counts towards confirmed possession change
         self.closest_player: Optional[Player] = None
         self.ball: Optional[Ball] = None
         
-        self.possession_counter_threshold: int = possession_counter_threshold
-        self.ball_distance_threshold: int = ball_distance_threshold
+        # New attributes for refined possession logic
+        self.current_controlling_team: Optional[Team] = None # Stores the team currently 'in control'
+        self.control_continuity_counter: int = 0 # Frames this team has been 'in control'
+
+        # Load thresholds from config (via class attributes that already load from config)
+        self.possession_counter_threshold: int = possession_counter_threshold # Existing
+        self.ball_distance_threshold: int = ball_distance_threshold # Existing
+        self.control_continuity_threshold: int = self.match_defaults_cfg['control_continuity_threshold'] # New
+
         self.fps: int = fps
         
-        self.pass_event: PassEvent = PassEvent()
+        # Attributes for ball speed calculation
+        self.previous_ball_center_abs: Optional[np.ndarray] = None
+        self.current_ball_speed_abs: float = 0.0 # pixels per second
+
+        # Load min_pass_speed_pps from config
+        pass_event_config = config.get('ui_constants', {}).get('pass_event', {})
+        self.min_pass_speed_pps: float = pass_event_config.get('min_pass_speed_pps', 150.0)
+
+        self.pass_event: PassEvent = PassEvent(min_pass_speed_pps=self.min_pass_speed_pps)
 
         # Pre-load background images
         self.possession_background_img: Optional[PIL.Image.Image] = self._load_background_image(possession_board_img_path)
@@ -97,65 +122,112 @@ class Match:
             return None
 
     def update(self, players: List[Player], ball: Optional[Ball]):
-        self.update_possession_duration()
+        self.update_possession_duration() # This still increments self.duration and active team's possession time
 
         if ball is None or ball.detection is None:
             self.closest_player = None
-            # Pass event might still need to process if ball becomes None after possession
-            self.pass_event.update(closest_player=None, ball=None) 
+            self.current_controlling_team = None
+            self.control_continuity_counter = 0
+            self.possession_counter = 0
+            self.previous_ball_center_abs = None # Add this reset
+            self.current_ball_speed_abs = 0.0    # Add this reset
+            self.pass_event.update(closest_player=None, ball=None, ball_speed=0.0)
             self.pass_event.process_pass()
             return
 
         self.ball = ball
 
-        if not players: # No players detected
+        # New Ball Speed Calculation Logic:
+        if self.ball and self.ball.detection and self.ball.center_abs is not None:
+            current_center_abs = self.ball.center_abs
+            if self.previous_ball_center_abs is not None:
+                displacement_vector = np.array(current_center_abs) - np.array(self.previous_ball_center_abs)
+                displacement_pixels = np.linalg.norm(displacement_vector)
+                if self.fps > 0:
+                    self.current_ball_speed_abs = displacement_pixels * self.fps
+                else:
+                    self.current_ball_speed_abs = 0.0
+            else:
+                self.current_ball_speed_abs = 0.0
+            self.previous_ball_center_abs = np.array(current_center_abs).copy()
+        else:
+            self.previous_ball_center_abs = None
+            self.current_ball_speed_abs = 0.0
+
+        if not players:  # No players detected
             self.closest_player = None
-            self.pass_event.update(closest_player=None, ball=ball)
+            self.current_controlling_team = None
+            self.control_continuity_counter = 0
+            self.possession_counter = 0
+            self.pass_event.update(closest_player=None, ball=ball, ball_speed=self.current_ball_speed_abs)
             self.pass_event.process_pass()
             return
 
-        # Find closest player
-        try:
-            # Filter out players with no valid distance to ball
-            valid_players = [p for p in players if p.distance_to_ball(ball) is not None]
-            if not valid_players:
-                self.closest_player = None
-                self.pass_event.update(closest_player=None, ball=ball)
-                self.pass_event.process_pass()
-                return
-
-            closest_player = min(valid_players, key=lambda player: player.distance_to_ball(ball))
-        except ValueError: # Should be caught by empty valid_players check
+        # Find closest player (existing logic for this can be kept)
+        valid_players = [p for p in players if p.distance_to_ball(ball) is not None]
+        if not valid_players:
             self.closest_player = None
-            self.pass_event.update(closest_player=None, ball=ball)
+            self.current_controlling_team = None
+            self.control_continuity_counter = 0
+            self.possession_counter = 0
+            self.pass_event.update(closest_player=None, ball=ball, ball_speed=self.current_ball_speed_abs)
             self.pass_event.process_pass()
             return
-            
-        self.closest_player = closest_player
-        ball_distance = closest_player.distance_to_ball(ball)
+
+        self.closest_player = min(valid_players, key=lambda player: player.distance_to_ball(ball))
+        ball_distance = self.closest_player.distance_to_ball(ball)
 
         if ball_distance is None or ball_distance > self.ball_distance_threshold:
-            self.closest_player = None # Player is too far, effectively no one has the ball
-            # Update pass event: player might have lost ball
-            self.pass_event.update(closest_player=None, ball=ball) 
+            self.closest_player = None # Player is too far
+            self.current_controlling_team = None
+            self.control_continuity_counter = 0
+            self.possession_counter = 0
+            self.pass_event.update(closest_player=None, ball=ball, ball_speed=self.current_ball_speed_abs)
             self.pass_event.process_pass()
             return
 
-        # Possession logic
-        if closest_player.team != self.current_team :
+        # New Possession Logic Starts Here
+        # ==================================
+
+        # Control Establishment Phase
+        if self.closest_player.team is not None: # Ensure player has a team
+            if self.closest_player.team == self.current_controlling_team:
+                self.control_continuity_counter += 1
+            else:
+                # New team is now closest, or was previously None
+                self.current_controlling_team = self.closest_player.team
+                self.control_continuity_counter = 1
+                self.possession_counter = 0 # Reset confirmed possession counter for the new controlling team
+        else:
+            # Closest player has no team, treat as loss of control
+            self.current_controlling_team = None
+            self.control_continuity_counter = 0
             self.possession_counter = 0
-            self.current_team = closest_player.team
-        
-        self.possession_counter += 1
 
-        if (
-            self.possession_counter >= self.possession_counter_threshold
-            and closest_player.team is not None
-        ):
-            self.change_team_possession(closest_player.team)
 
-        # Pass detection
-        self.pass_event.update(closest_player=closest_player, ball=ball)
+        # Possession Confirmation Phase
+        if self.current_controlling_team is not None and \
+           self.control_continuity_counter >= self.control_continuity_threshold:
+
+            # Current controlling team has established stable control.
+            # Now, check if they meet the criteria for confirmed possession.
+            self.possession_counter += 1
+
+            if self.possession_counter >= self.possession_counter_threshold:
+                if self.team_possession != self.current_controlling_team:
+                    self.change_team_possession(self.current_controlling_team)
+        else:
+            # Control not yet stable enough for the current_controlling_team,
+            # or no team is currently controlling.
+            # If a team *had* confirmed possession, they keep it for now unless challenged
+            # and overcome by another team. If current_controlling_team is None,
+            # and possession_counter was building for a previous team, it's already reset.
+            # If self.current_controlling_team became None in this frame, possession_counter was reset too.
+            pass # No change to self.possession_counter unless it was reset above
+
+
+        # Pass detection (original logic)
+        self.pass_event.update(closest_player=self.closest_player, ball=ball, ball_speed=self.current_ball_speed_abs)
         self.pass_event.process_pass()
 
     def change_team_possession(self, team: Optional[Team]):

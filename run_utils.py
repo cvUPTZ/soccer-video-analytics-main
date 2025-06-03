@@ -5,6 +5,7 @@ import numpy as np
 from norfair import Detection
 from norfair.camera_motion import MotionEstimator
 
+from config_loader import config
 from inference import Converter, YoloV5
 from soccer import Ball, Match
 
@@ -30,7 +31,7 @@ def get_ball_detections(
         List of ball detections
     """
     ball_df = ball_detector.predict(frame)
-    ball_df = ball_df[ball_df["confidence"] > 0.3]
+    ball_df = ball_df[ball_df["confidence"] > config['detection']['ball_confidence_threshold']]
     return Converter.DataFrame_to_Detections(ball_df)
 
 
@@ -57,7 +58,7 @@ def get_player_detections(
 
     person_df = person_detector.predict(frame)
     person_df = person_df[person_df["name"] == "person"]
-    person_df = person_df[person_df["confidence"] > 0.35]
+    person_df = person_df[person_df["confidence"] > config['detection']['player_confidence_threshold']]
     person_detections = Converter.DataFrame_to_Detections(person_df)
     return person_detections
 
@@ -87,7 +88,11 @@ def create_mask(frame: np.ndarray, detections: List[norfair.Detection]) -> np.nd
         mask = YoloV5.generate_predictions_mask(detections_df, frame, margin=40)
 
     # remove goal counter
-    mask[69:200, 160:510] = 0
+    mask_config = config['detection']['goal_counter_mask']
+    mask[
+        mask_config['y_start']:mask_config['y_end'],
+        mask_config['x_start']:mask_config['x_end']
+    ] = 0
 
     return mask
 
@@ -144,7 +149,8 @@ def update_motion_estimator(
 
 def get_main_ball(detections: List[Detection], match: Match = None) -> Ball:
     """
-    Gets the main ball from a list of balls detection
+    Gets the main ball from a list of balls detection.
+    If multiple balls are detected, the one with the highest confidence score is chosen.
 
     The match is used in order to set the color of the ball to
     the color of the team in possession of the ball.
@@ -152,21 +158,49 @@ def get_main_ball(detections: List[Detection], match: Match = None) -> Ball:
     Parameters
     ----------
     detections : List[Detection]
-        List of detections
+        List of ball detections from the detector. Each detection is expected
+        to have a confidence score in `detection.data["p"]`.
     match : Match, optional
         Match object, by default None
 
     Returns
     -------
     Ball
-        Main ball
+        Main ball object (can be a Ball with no detection if no balls are found).
     """
     ball = Ball(detection=None)
 
     if match:
         ball.set_color(match)
 
-    if detections:
-        ball.detection = detections[0]
+    if not detections:
+        return ball
+
+    # Sort detections by confidence score in descending order
+    # Confidence is expected to be in detection.data["p"]
+    # Add a check for "p" in data to avoid KeyError if a detection somehow misses it.
+    # And handle cases where data might be None (though Norfair typically initializes it)
+    valid_detections_with_confidence = []
+    for det in detections:
+        if det.data is not None and "p" in det.data:
+            valid_detections_with_confidence.append(det)
+        # else:
+            # Optionally log a warning for detections without confidence or data
+            # print(f"Warning: Ball detection {det} missing confidence score or data.")
+
+    if not valid_detections_with_confidence:
+        # No valid detections with confidence found, return ball with no detection
+        return ball
+
+    # Sort by confidence: detection.data["p"]
+    # The lambda function will access detection.data["p"]
+    sorted_detections = sorted(
+        valid_detections_with_confidence,
+        key=lambda det: det.data["p"],
+        reverse=True
+    )
+
+    # The ball with the highest confidence is the first one after sorting
+    ball.detection = sorted_detections[0]
 
     return ball

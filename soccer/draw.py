@@ -10,9 +10,10 @@ import PIL.ImageDraw
 import PIL.ImageFont
 
 from soccer.utils import get_bbox_center, round_tuple_coords # Assuming utils.py is in the same dir
+from config_loader import config
 
 # It's better to load fonts once or make them configurable
-DEFAULT_FONT_PATH = Path("fonts/Gidole-Regular.ttf")
+DEFAULT_FONT_PATH = Path(config['paths']['font'])
 try:
     DEFAULT_FONT_REGULAR_20 = PIL.ImageFont.truetype(str(DEFAULT_FONT_PATH), size=20)
     DEFAULT_FONT_REGULAR_24 = PIL.ImageFont.truetype(str(DEFAULT_FONT_PATH), size=24)

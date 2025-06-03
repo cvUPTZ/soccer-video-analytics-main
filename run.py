@@ -16,18 +16,19 @@ from run_utils import (
     update_motion_estimator,
 )
 from soccer import Match, Player, Team
+from config_loader import config # Add this import
 from soccer.draw import AbsolutePath
 from soccer.pass_event import Pass
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--video",
-    default="videos/soccer_possession.mp4",
+    default=config['paths']['default_video'], # Use config value
     type=str,
     help="Path to the input video",
 )
 parser.add_argument(
-    "--model", default="models/ball.pt", type=str, help="Path to the model"
+    "--model", default=config['paths']['default_ball_model'], type=str, help="Path to the model" # Use config value
 )
 parser.add_argument(
     "--passes",
@@ -55,17 +56,35 @@ hsv_classifier = HSVClassifier(filters=filters)
 classifier = InertiaClassifier(classifier=hsv_classifier, inertia=20)
 
 # Teams and Match
-chelsea = Team(
-    name="Chelsea",
-    abbreviation="CHE",
-    color=(255, 0, 0),
-    board_color=(244, 86, 64),
-    text_color=(255, 255, 255),
-)
-man_city = Team(name="Man City", abbreviation="MNC", color=(240, 230, 188))
-teams = [chelsea, man_city]
+teams_data = config.get('teams', [])
+teams = []
+for team_data in teams_data:
+    teams.append(
+        Team(
+            name=team_data['name'],
+            abbreviation=team_data['abbreviation'],
+            color=tuple(team_data['color']), # Ensure tuple
+            board_color=tuple(team_data['board_color']) if team_data.get('board_color') else None, # Ensure tuple
+            text_color=tuple(team_data['text_color']) if team_data.get('text_color') else None # Ensure tuple
+        )
+    )
+
+# For simplicity, assume first team in config is home, second is away, or add specific keys in config.
+# For now, let's assume:
+home_team_data_cfg = next((t for t in teams_data if t['name'] == "Chelsea"), None)
+away_team_data_cfg = next((t for t in teams_data if t['name'] == "Man City"), None)
+
+if not home_team_data_cfg or not away_team_data_cfg:
+    raise ValueError("Home or away team not found in config. Please define 'Chelsea' and 'Man City' in config.yaml for current setup.")
+
+chelsea = next((t for t in teams if t.name == home_team_data_cfg['name']), None)
+man_city = next((t for t in teams if t.name == away_team_data_cfg['name']), None)
+
+if not chelsea or not man_city:
+    raise ValueError("Could not instantiate Team objects for Chelsea or Man City from config.")
+
 match = Match(home=chelsea, away=man_city, fps=fps)
-match.team_possession = man_city
+match.team_possession = man_city # Or determine from config, for now keep Man City
 
 # Tracking
 player_tracker = Tracker(

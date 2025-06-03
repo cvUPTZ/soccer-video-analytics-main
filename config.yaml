@@ -1,0 +1,96 @@
+paths:
+  default_video: "videos/soccer_possession.mp4"
+  default_ball_model: "models/ball.pt"
+  possession_board_img: "images/possession_board.png"
+  passes_board_img: "images/passes_board.png"
+  font: "fonts/Gidole-Regular.ttf"
+
+detection:
+  ball_confidence_threshold: 0.3
+  player_confidence_threshold: 0.35
+  # Mask coordinates for goal counter in run_utils.create_mask
+  # mask[69:200, 160:510] = 0
+  goal_counter_mask:
+    y_start: 69
+    y_end: 200
+    x_start: 160
+    x_end: 510
+
+teams:
+  - name: "Chelsea"
+    abbreviation: "CHE"
+    color: [255, 0, 0] # RGB
+    board_color: [244, 86, 64]
+    text_color: [255, 255, 255]
+  - name: "Man City"
+    abbreviation: "MNC"
+    color: [240, 230, 188]
+    # board_color will default to color if not specified
+    text_color: [0, 0, 0] # Assuming black text for Man City for contrast
+
+# HSV color filters will be more complex and added later.
+# UI drawing constants from soccer/match.py will be added later.
+
+ui_constants:
+  match_defaults:
+    possession_counter_threshold: 20
+    ball_distance_threshold: 45 # pixels
+    control_continuity_threshold: 5 # New threshold
+
+  score_bar:
+    height: 29
+    width: 310
+    ratio_min_protection: 0.07
+    ratio_max_protection: 0.93
+    text_min_ratio_display_home: 0.15 # Min ratio to display text for home team
+    text_max_ratio_display_away: 0.85 # Max ratio to display text for away team (1.0 - 0.15)
+
+  counter_rect:
+    height: 31
+    width: 150
+    spacing: 10
+
+  counter_layout:
+    background_offset_x: 540
+    background_offset_y: 40
+    elements_origin_x_offset: 35
+    elements_origin_y_offset: 130
+    bar_origin_y_offset: 195
+
+  pass_event:
+    player_with_ball_threshold: 3
+    player_with_ball_threshold_different_team: 4
+    min_pass_speed_pps: 150 # Minimum pass speed in pixels per second (example value)
+
+hsv_filters:
+  # These filters will be directly used by HSVClassifier.
+  # The 'name' of each filter should match a team name defined in config.teams
+  team_jersey_filters:
+    - name: "Chelsea"
+      colors:
+        - name: "chelsea_blue" # This is just a descriptive name for the color entry
+          lower_hsv: [100, 150, 0] # Based on 'blue' from original inference.colors
+          upper_hsv: [140, 255, 255]
+          weight: 1.0 # Primary color
+        # Add other characteristic colors for Chelsea if needed, e.g., white accents
+        - name: "chelsea_white_accent" # Example
+          lower_hsv: [0, 0, 200]
+          upper_hsv: [179, 30, 255]
+          weight: 0.5 # Accent color, less weight
+    - name: "Man City"
+      colors:
+        - name: "mancity_skyblue" # Descriptive name
+          lower_hsv: [85, 100, 100] # A general sky blue, adjust as needed
+          upper_hsv: [100, 255, 255]
+          weight: 1.0 # Primary color
+        # Add other characteristic colors for Man City if needed
+        # - name: "mancity_darkblue_accent"
+        #   lower_hsv: [100, 100, 50]
+        #   upper_hsv: [130, 255, 150]
+        #   weight: 0.8
+
+# Note: The HSV values here are examples and would need careful tuning.
+# The 'name' field within each color entry inside a team's 'colors' list
+# is mostly for description within the YAML. The HSVClassifier primarily uses
+# the lower_hsv and upper_hsv values. The 'name' of the overall filter (e.g., "Chelsea")
+# is crucial for matching with team objects.
