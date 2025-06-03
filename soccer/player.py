@@ -1,305 +1,202 @@
-from array import array
-from typing import List
+
+from typing import List, Optional, Tuple
 
 import numpy as np
-import PIL
+import PIL.Image
 from norfair import Detection
 
 from soccer.ball import Ball
-from soccer.draw import Draw
+from soccer.draw import Draw # Assuming Draw class handles PIL.Image
 from soccer.team import Team
 
 
 class Player:
-    def __init__(self, detection: Detection):
-        """
+    def __init__(self, detection: Optional[Detection]):
+        self.detection: Optional[Detection] = detection
+        self.team: Optional[Team] = None
 
-        Initialize Player
-
-        Parameters
-        ----------
-        detection : Detection
-            Detection containing the player
-        """
-        self.detection = detection
-
-        self.team = None
-
-        if detection:
-            if "team" in detection.data:
+        if detection and detection.data and "team" in detection.data:
+            # Ensure 'team' is actually a Team object, not just a name string
+            if isinstance(detection.data["team"], Team):
                 self.team = detection.data["team"]
+            # else: print warning or handle if it's a name to be resolved
 
-    def get_left_foot(self, points: np.array):
+    def _get_foot_position(self, points: np.ndarray, side: str) -> Optional[np.ndarray]:
+        """Helper to get foot position, assumes points is [[x1,y1],[x2,y2]]."""
+        if points is None or points.shape != (2,2): return None
         x1, y1 = points[0]
         x2, y2 = points[1]
-
-        return [x1, y2]
-
-    def get_right_foot(self, points: np.array):
-        return points[1]
-
-    @property
-    def left_foot(self):
-        points = self.detection.points
-        left_foot = self.get_left_foot(points)
-
-        return left_foot
+        if side == "left":
+            return np.array([x1, y2]) # Bottom-left
+        elif side == "right":
+            return np.array([x2, y2]) # Bottom-right
+        return None
 
     @property
-    def right_foot(self):
-        points = self.detection.points
-        right_foot = self.get_right_foot(points)
-
-        return right_foot
+    def left_foot(self) -> Optional[np.ndarray]: # Relative coordinates
+        return self._get_foot_position(self.detection.points, "left") if self.detection else None
 
     @property
-    def left_foot_abs(self):
-        points = self.detection.absolute_points
-        left_foot_abs = self.get_left_foot(points)
-
-        return left_foot_abs
+    def right_foot(self) -> Optional[np.ndarray]: # Relative coordinates
+        return self._get_foot_position(self.detection.points, "right") if self.detection else None
 
     @property
-    def right_foot_abs(self):
-        points = self.detection.absolute_points
-        right_foot_abs = self.get_right_foot(points)
-
-        return right_foot_abs
+    def left_foot_abs(self) -> Optional[np.ndarray]: # Absolute coordinates
+        return self._get_foot_position(self.detection.absolute_points, "left") if self.detection else None
 
     @property
-    def feet(self) -> np.ndarray:
-        return np.array([self.left_foot, self.right_foot])
+    def right_foot_abs(self) -> Optional[np.ndarray]: # Absolute coordinates
+        return self._get_foot_position(self.detection.absolute_points, "right") if self.detection else None
 
-    def distance_to_ball(self, ball: Ball) -> float:
-        """
-        Returns the distance between the player closest foot and the ball
+    @property
+    def feet(self) -> Optional[np.ndarray]: # Relative coordinates
+        lf, rf = self.left_foot, self.right_foot
+        if lf is not None and rf is not None:
+            return np.array([lf, rf])
+        return None
 
-        Parameters
-        ----------
-        ball : Ball
-            Ball object
-
-        Returns
-        -------
-        float
-            Distance between the player closest foot and the ball
-        """
-
+    def distance_to_ball(self, ball: Ball) -> Optional[float]:
         if self.detection is None or ball.center is None:
             return None
 
-        left_foot_distance = np.linalg.norm(ball.center - self.left_foot)
-        right_foot_distance = np.linalg.norm(ball.center - self.right_foot)
+        left_f = self.left_foot
+        right_f = self.right_foot
+        
+        distances = []
+        if left_f is not None:
+            distances.append(np.linalg.norm(ball.center - left_f))
+        if right_f is not None:
+            distances.append(np.linalg.norm(ball.center - right_f))
+        
+        return min(distances) if distances else None
 
-        return min(left_foot_distance, right_foot_distance)
 
-    def closest_foot_to_ball(self, ball: Ball) -> np.ndarray:
-        """
-
-        Returns the closest foot to the ball
-
-        Parameters
-        ----------
-        ball : Ball
-            Ball object
-
-        Returns
-        -------
-        np.ndarray
-            Closest foot to the ball (x, y)
-        """
-
+    def closest_foot_to_ball(self, ball: Ball) -> Optional[np.ndarray]: # Relative
         if self.detection is None or ball.center is None:
             return None
 
-        left_foot_distance = np.linalg.norm(ball.center - self.left_foot)
-        right_foot_distance = np.linalg.norm(ball.center - self.right_foot)
+        left_f = self.left_foot
+        right_f = self.right_foot
+        ball_c = ball.center
 
-        if left_foot_distance < right_foot_distance:
-            return self.left_foot
+        dist_lf = np.linalg.norm(ball_c - left_f) if left_f is not None else float('inf')
+        dist_rf = np.linalg.norm(ball_c - right_f) if right_f is not None else float('inf')
 
-        return self.right_foot
+        if dist_lf == float('inf') and dist_rf == float('inf'): return None
+        return left_f if dist_lf <= dist_rf else right_f
 
-    def closest_foot_to_ball_abs(self, ball: Ball) -> np.ndarray:
-        """
-
-        Returns the closest foot to the ball
-
-        Parameters
-        ----------
-        ball : Ball
-            Ball object
-
-        Returns
-        -------
-        np.ndarray
-            Closest foot to the ball (x, y)
-        """
-
+    def closest_foot_to_ball_abs(self, ball: Ball) -> Optional[np.ndarray]: # Absolute
         if self.detection is None or ball.center_abs is None:
             return None
 
-        left_foot_distance = np.linalg.norm(ball.center_abs - self.left_foot_abs)
-        right_foot_distance = np.linalg.norm(ball.center_abs - self.right_foot_abs)
-
-        if left_foot_distance < right_foot_distance:
-            return self.left_foot_abs
-
-        return self.right_foot_abs
+        left_f_abs = self.left_foot_abs
+        right_f_abs = self.right_foot_abs
+        ball_c_abs = ball.center_abs
+        
+        dist_lf = np.linalg.norm(ball_c_abs - left_f_abs) if left_f_abs is not None else float('inf')
+        dist_rf = np.linalg.norm(ball_c_abs - right_f_abs) if right_f_abs is not None else float('inf')
+        
+        if dist_lf == float('inf') and dist_rf == float('inf'): return None
+        return left_f_abs if dist_lf <= dist_rf else right_f_abs
 
     def draw(
-        self, frame: PIL.Image.Image, confidence: bool = False, id: bool = False
+        self, frame: PIL.Image.Image, confidence: bool = False, id_label: bool = False # <--- Ensure this is 'id_label'
     ) -> PIL.Image.Image:
-        """
-        Draw the player on the frame
-
-        Parameters
-        ----------
-        frame : PIL.Image.Image
-            Frame to draw on
-        confidence : bool, optional
-            Whether to draw confidence text in bounding box, by default False
-        id : bool, optional
-            Whether to draw id text in bounding box, by default False
-
-        Returns
-        -------
-        PIL.Image.Image
-            Frame with player drawn
-        """
         if self.detection is None:
             return frame
 
+        if self.detection.data is None: self.detection.data = {}
+        
         if self.team is not None:
             self.detection.data["color"] = self.team.color
+        elif "color" in self.detection.data:
+            del self.detection.data["color"]
 
-        return Draw.draw_detection(self.detection, frame, confidence=confidence, id=id)
+        # Pass the id_label argument correctly
+        return Draw.draw_detection(self.detection, frame, confidence=confidence, id_label=id_label)
+    
+    
+    # def draw(
+    #     self, frame: PIL.Image.Image, confidence: bool = False, id_label: bool = False
+    # ) -> PIL.Image.Image:
+    #     if self.detection is None:
+    #         return frame
 
-    def draw_pointer(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Draw a pointer above the player
+    #     # Ensure detection.data exists
+    #     if self.detection.data is None: self.detection.data = {}
+        
+    #     if self.team is not None:
+    #         self.detection.data["color"] = self.team.color # For drawing
+    #     elif "color" in self.detection.data: # Remove color if no team, or set default
+    #         del self.detection.data["color"]
 
-        Parameters
-        ----------
-        frame : np.ndarray
-            Frame to draw on
+    #     return Draw.draw_detection(self.detection, frame, confidence=confidence, id_label=id_label)
 
-        Returns
-        -------
-        np.ndarray
-            Frame with pointer drawn
-        """
+    def draw_pointer(self, frame: PIL.Image.Image) -> PIL.Image.Image:
         if self.detection is None:
             return frame
-
-        color = None
-
-        if self.team:
-            color = self.team.color
-
-        return Draw.draw_pointer(detection=self.detection, img=frame, color=color)
+        
+        pointer_color = self.team.color if self.team else (128, 128, 128) # Grey if no team
+        return Draw.draw_pointer(detection=self.detection, img=frame, color=pointer_color)
 
     def __str__(self):
-        return f"Player: {self.feet}, team: {self.team}"
+        team_name = self.team.name if self.team else "N/A"
+        return f"Player ID: {self.detection.data.get('id', 'N/A') if self.detection else 'N/A'}, Team: {team_name}"
 
-    def __eq__(self, other: "Player") -> bool:
-        if isinstance(self, Player) == False or isinstance(other, Player) == False:
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Player):
+            return NotImplemented
+        if self.detection is None or other.detection is None:
+            return False # Or handle as per desired logic for None detections
+        if self.detection.data is None or other.detection.data is None:
             return False
 
-        self_id = self.detection.data["id"]
-        other_id = other.detection.data["id"]
+        self_id = self.detection.data.get("id")
+        other_id = other.detection.data.get("id")
 
-        return self_id == other_id
+        return self_id is not None and self_id == other_id
 
     @staticmethod
-    def have_same_id(player1: "Player", player2: "Player") -> bool:
-        """
-        Check if player1 and player2 have the same ids
-
-        Parameters
-        ----------
-        player1 : Player
-            One player
-        player2 : Player
-            Another player
-
-        Returns
-        -------
-        bool
-            True if they have the same id
-        """
-        if not player1 or not player2:
-            return False
-        if "id" not in player1.detection.data or "id" not in player2.detection.data:
-            return False
-        return player1 == player2
+    def have_same_id(player1: Optional["Player"], player2: Optional["Player"]) -> bool:
+        if not player1 or not player2: return False
+        if player1.detection is None or player2.detection is None: return False
+        if player1.detection.data is None or player2.detection.data is None: return False
+        
+        p1_id = player1.detection.data.get("id")
+        p2_id = player2.detection.data.get("id")
+        
+        return p1_id is not None and p1_id == p2_id
 
     @staticmethod
     def draw_players(
         players: List["Player"],
         frame: PIL.Image.Image,
         confidence: bool = False,
-        id: bool = False,
+        id_label: bool = False,
     ) -> PIL.Image.Image:
-        """
-        Draw all players on the frame
-
-        Parameters
-        ----------
-        players : List[Player]
-            List of Player objects
-        frame : PIL.Image.Image
-            Frame to draw on
-        confidence : bool, optional
-            Whether to draw confidence text in bounding box, by default False
-        id : bool, optional
-            Whether to draw id text in bounding box, by default False
-
-        Returns
-        -------
-        PIL.Image.Image
-            Frame with players drawn
-        """
         for player in players:
-            frame = player.draw(frame, confidence=confidence, id=id)
-
+            frame = player.draw(frame, confidence=confidence, id_label=id_label)
         return frame
 
     @staticmethod
     def from_detections(
-        detections: List[Detection], teams=List[Team]
+        detections: List[Optional[Detection]], teams: List[Team]
     ) -> List["Player"]:
-        """
-        Create a list of Player objects from a list of detections and a list of teams.
-
-        It reads the classification string field of the detection, converts it to a
-        Team object and assigns it to the player.
-
-        Parameters
-        ----------
-        detections : List[Detection]
-            List of detections
-        teams : List[Team], optional
-            List of teams, by default List[Team]
-
-        Returns
-        -------
-        List[Player]
-            List of Player objects
-        """
         players = []
-
         for detection in detections:
             if detection is None:
                 continue
+            
+            # Ensure data dictionary exists
+            if detection.data is None: detection.data = {}
 
             if "classification" in detection.data:
                 team_name = detection.data["classification"]
-                team = Team.from_name(teams=teams, name=team_name)
-                detection.data["team"] = team
-
-            player = Player(detection=detection)
-
-            players.append(player)
-
+                # Team.from_name should handle if team_name is not found
+                team_obj = Team.from_name(teams=teams, name=str(team_name))
+                if team_obj: # Only assign if team is found
+                    detection.data["team"] = team_obj 
+                # else: 'team' field remains unset or handled by Player.__init__
+            
+            players.append(Player(detection=detection))
         return players

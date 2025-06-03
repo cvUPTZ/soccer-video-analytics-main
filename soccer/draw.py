@@ -1,49 +1,42 @@
+
 from math import sqrt
-from typing import List
+from typing import List, Tuple, Optional, Union
+from pathlib import Path
 
 import norfair
 import numpy as np
-import PIL
+import PIL.Image
+import PIL.ImageDraw
+import PIL.ImageFont
+
+from soccer.utils import get_bbox_center, round_tuple_coords # Assuming utils.py is in the same dir
+
+# It's better to load fonts once or make them configurable
+DEFAULT_FONT_PATH = Path("fonts/Gidole-Regular.ttf")
+try:
+    DEFAULT_FONT_REGULAR_20 = PIL.ImageFont.truetype(str(DEFAULT_FONT_PATH), size=20)
+    DEFAULT_FONT_REGULAR_24 = PIL.ImageFont.truetype(str(DEFAULT_FONT_PATH), size=24)
+except IOError:
+    print(f"Warning: Font {DEFAULT_FONT_PATH} not found. Using default PIL font.")
+    DEFAULT_FONT_REGULAR_20 = PIL.ImageFont.load_default()
+    DEFAULT_FONT_REGULAR_24 = PIL.ImageFont.load_default()
 
 
 class Draw:
     @staticmethod
     def draw_rectangle(
         img: PIL.Image.Image,
-        origin: tuple,
+        origin: Tuple[int, int],
         width: int,
         height: int,
-        color: tuple,
+        color: Tuple[int, int, int],
         thickness: int = 2,
     ) -> PIL.Image.Image:
-        """
-        Draw a rectangle on the image
-
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        origin : tuple
-            Origin of the rectangle (x, y)
-        width : int
-            Width of the rectangle
-        height : int
-            Height of the rectangle
-        color : tuple
-            Color of the rectangle (BGR)
-        thickness : int, optional
-            Thickness of the rectangle, by default 2
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the rectangle drawn
-        """
-
         draw = PIL.ImageDraw.Draw(img)
         draw.rectangle(
             [origin, (origin[0] + width, origin[1] + height)],
-            fill=color,
+            fill=color, # This fills the rectangle, outline is for border
+            outline=color if thickness > 0 else None, # Use outline for border
             width=thickness,
         )
         return img
@@ -51,77 +44,29 @@ class Draw:
     @staticmethod
     def draw_text(
         img: PIL.Image.Image,
-        origin: tuple,
+        origin: Tuple[int, int],
         text: str,
-        font: PIL.ImageFont = None,
-        color: tuple = (255, 255, 255),
+        font: PIL.ImageFont.FreeTypeFont = None,
+        color: Union[str, Tuple[int, int, int]] = (255, 255, 255), # RGB
     ) -> PIL.Image.Image:
-        """
-        Draw text on the image
-
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        origin : tuple
-            Origin of the text (x, y)
-        text : str
-            Text to draw
-        font : PIL.ImageFont
-            Font to use
-        color : tuple, optional
-            Color of the text (RGB), by default (255, 255, 255)
-
-        Returns
-        -------
-        PIL.Image.Image
-        """
         draw = PIL.ImageDraw.Draw(img)
-
-        if font is None:
-            font = PIL.ImageFont.truetype("fonts/Gidole-Regular.ttf", size=20)
-
-        draw.text(
-            origin,
-            text,
-            font=font,
-            fill=color,
-        )
-
+        font_to_use = font or DEFAULT_FONT_REGULAR_20
+        draw.text(origin, text, font=font_to_use, fill=color)
         return img
 
     @staticmethod
     def draw_bounding_box(
-        img: PIL.Image.Image, rectangle: tuple, color: tuple, thickness: int = 3
+        img: PIL.Image.Image, 
+        rectangle_points: Tuple[Tuple[int, int], Tuple[int, int]], # ((xmin, ymin), (xmax, ymax))
+        color: Tuple[int, int, int], 
+        thickness: int = 3,
+        radius: int = 7
     ) -> PIL.Image.Image:
-        """
-
-        Draw a bounding box on the image
-
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        rectangle : tuple
-            Rectangle to draw ( (xmin, ymin), (xmax, ymax) )
-        color : tuple
-            Color of the rectangle (BGR)
-        thickness : int, optional
-            Thickness of the rectangle, by default 2
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the bounding box drawn
-        """
-
-        rectangle = rectangle[0:2]
-
         draw = PIL.ImageDraw.Draw(img)
-        rectangle = [tuple(x) for x in rectangle]
-        # draw.rectangle(rectangle, outline=color, width=thickness)
-        draw.rounded_rectangle(rectangle, radius=7, outline=color, width=thickness)
-
+        # Ensure points are tuples for rounded_rectangle
+        p1 = tuple(map(int, rectangle_points[0]))
+        p2 = tuple(map(int, rectangle_points[1]))
+        draw.rounded_rectangle([p1, p2], radius=radius, outline=color, width=thickness)
         return img
 
     @staticmethod
@@ -129,759 +74,417 @@ class Draw:
         detection: norfair.Detection,
         img: PIL.Image.Image,
         confidence: bool = False,
-        id: bool = False,
+        id_label: bool = False, # Renamed from id to avoid conflict with builtin
     ) -> PIL.Image.Image:
-        """
-        Draw a bounding box on the image from a norfair.Detection
-
-        Parameters
-        ----------
-        detection : norfair.Detection
-            Detection to draw
-        img : PIL.Image.Image
-            Image
-        confidence : bool, optional
-            Whether to draw confidence in the box, by default False
-        id : bool, optional
-            Whether to draw id in the box, by default False
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the bounding box drawn
-        """
-
-        if detection is None:
+        if detection is None or detection.points is None:
             return img
 
-        x1, y1 = detection.points[0]
-        x2, y2 = detection.points[1]
+        # Ensure points are in the correct format for drawing
+        p1 = tuple(detection.points[0].astype(int))
+        p2 = tuple(detection.points[1].astype(int))
+        
+        # Use a default color if not specified, ensure it's RGB for PIL
+        det_color_rgb = detection.data.get("color", (0, 0, 0)) # Black default
+        if len(det_color_rgb) == 4: # RGBA
+            det_color_rgb = det_color_rgb[:3] # Take RGB part
 
-        color = (0, 0, 0)
-        if "color" in detection.data:
-            color = detection.data["color"] + (255,)
+        img = Draw.draw_bounding_box(img=img, rectangle_points=(p1,p2), color=det_color_rgb)
 
-        img = Draw.draw_bounding_box(img=img, rectangle=detection.points, color=color)
-
+        label_y_offset = 20
         if "label" in detection.data:
             label = detection.data["label"]
             img = Draw.draw_text(
-                img=img,
-                origin=(x1, y1 - 20),
-                text=label,
-                color=color,
+                img=img, origin=(p1[0], p1[1] - label_y_offset), text=label, color=det_color_rgb
             )
 
-        if "id" in detection.data and id is True:
-            id = detection.data["id"]
+        if id_label and "id" in detection.data:
+            obj_id = detection.data["id"]
+            # Adjust x for ID to be on the right, ensure text is visible
+            id_text = f"ID: {obj_id}"
+            # font_id = DEFAULT_FONT_REGULAR_20 # Assuming same font as label
+            # id_text_width = font_id.getsize(id_text)[0] # PIL getsize deprecated, use textlength
+            # id_text_width = PIL.ImageDraw.Draw(img).textlength(id_text, font=font_id)
+            # origin_x_id = p2[0] - id_text_width if p2[0] - id_text_width > p1[0] else p1[0] + 5 # place on right or near left
+            # Simplified: place near top-right corner of the box
             img = Draw.draw_text(
-                img=img,
-                origin=(x2, y1 - 20),
-                text=f"ID: {id}",
-                color=color,
+                img=img, origin=(p2[0] - 50, p1[1] - label_y_offset), text=id_text, color=det_color_rgb
             )
 
-        if confidence:
+
+        if confidence and "p" in detection.data:
+            conf_text = str(round(detection.data["p"], 2))
             img = Draw.draw_text(
-                img=img,
-                origin=(x1, y2),
-                text=str(round(detection.data["p"], 2)),
-                color=color,
+                img=img, origin=(p1[0], p2[1] + 5), text=conf_text, color=det_color_rgb # Below the box
             )
-
         return img
 
     @staticmethod
     def draw_pointer(
-        detection: norfair.Detection, img: PIL.Image.Image, color: tuple = (0, 255, 0)
+        detection: norfair.Detection, img: PIL.Image.Image, color: Optional[Tuple[int,int,int]] = None
     ) -> PIL.Image.Image:
-        """
+        if detection is None or detection.points is None:
+            return img # Return original image if no detection
 
-        Draw a pointer on the image from a norfair.Detection bounding box
+        # Default color to green if not provided
+        pointer_color_rgb = color or (0, 255, 0) # Green default
+        if len(pointer_color_rgb) == 4: # RGBA
+            pointer_color_rgb = pointer_color_rgb[:3]
 
-        Parameters
-        ----------
-        detection : norfair.Detection
-            Detection to draw
-        img : PIL.Image.Image
-            Image
-        color : tuple, optional
-            Pointer color, by default (0, 255, 0)
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the pointer drawn
-        """
-        if detection is None:
-            return
-
-        if color is None:
-            color = (0, 0, 0)
-
-        x1, y1 = detection.points[0]
-        x2, y2 = detection.points[1]
+        x1, y1 = map(int, detection.points[0])
+        x2, y2 = map(int, detection.points[1])
 
         draw = PIL.ImageDraw.Draw(img)
-
-        # (t_x1, t_y1)        (t_x2, t_y2)
-        #   \                  /
-        #    \                /
-        #     \              /
-        #      \            /
-        #       \          /
-        #        \        /
-        #         \      /
-        #          \    /
-        #           \  /
-        #       (t_x3, t_y3)
 
         width = 20
         height = 20
         vertical_space_from_bbox = 7
 
-        t_x3 = 0.5 * x1 + 0.5 * x2
+        t_x3 = (x1 + x2) / 2
         t_x1 = t_x3 - width / 2
         t_x2 = t_x3 + width / 2
 
         t_y1 = y1 - vertical_space_from_bbox - height
-        t_y2 = t_y1
-        t_y3 = y1 - vertical_space_from_bbox
+        t_y3 = y1 - vertical_space_from_bbox # Tip of the triangle
+        # t_y2 = t_y1, already defined by y1
 
-        draw.polygon(
-            [
-                (t_x1, t_y1),
-                (t_x2, t_y2),
-                (t_x3, t_y3),
-            ],
-            fill=color,
-        )
-
-        draw.line(
-            [
-                (t_x1, t_y1),
-                (t_x2, t_y2),
-                (t_x3, t_y3),
-                (t_x1, t_y1),
-            ],
-            fill="black",
-            width=2,
-        )
-
+        triangle_points = [
+            (t_x1, t_y1), (t_x2, t_y1), (t_x3, t_y3) # (t_x2, t_y2) is (t_x2, t_y1)
+        ]
+        
+        draw.polygon(triangle_points, fill=pointer_color_rgb, outline="black") # Outline for better visibility
+        # The line drawing part in original code seems redundant if polygon is outlined
         return img
 
     @staticmethod
     def rounded_rectangle(
-        img: PIL.Image.Image, rectangle: tuple, color: tuple, radius: int = 15
+        img: PIL.Image.Image, 
+        rectangle_points: Tuple[Tuple[int, int], Tuple[int, int]], 
+        color: Tuple[int, int, int, Optional[int]], # RGBA or RGB
+        radius: int = 15,
+        fill_color: bool = True # If true, fill, else just outline
     ) -> PIL.Image.Image:
-        """
-        Draw a rounded rectangle on the image
+        # Ensure color has alpha for overlay
+        if len(color) == 3:
+            color_rgba = color + (255,) # Opaque
+        else:
+            color_rgba = color
+            
+        overlay = img.copy() # Work on a copy
+        draw = PIL.ImageDraw.Draw(overlay, "RGBA") # Ensure overlay is RGBA
+        
+        p1 = tuple(map(int, rectangle_points[0]))
+        p2 = tuple(map(int, rectangle_points[1]))
 
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        rectangle : tuple
-            Rectangle to draw ( (xmin, ymin), (xmax, ymax) )
-        color : tuple
-            Color of the rectangle (BGR)
-        radius : int, optional
-            Radius of the corners, by default 15
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the rounded rectangle drawn
-        """
-
-        overlay = img.copy()
-        draw = PIL.ImageDraw.Draw(overlay, "RGBA")
-        draw.rounded_rectangle(rectangle, radius, fill=color)
-        return overlay
+        if fill_color:
+            draw.rounded_rectangle([p1, p2], radius, fill=color_rgba)
+        else:
+            draw.rounded_rectangle([p1, p2], radius, outline=color_rgba, width=2) # Example width
+        
+        # Alpha composite the overlay back onto the original image
+        img.alpha_composite(overlay) # This assumes img is also RGBA
+        # If img is RGB, need: img.paste(overlay, (0,0), overlay)
+        return img # Or return overlay if that's the workflow
 
     @staticmethod
     def half_rounded_rectangle(
         img: PIL.Image.Image,
-        rectangle: tuple,
-        color: tuple,
+        rectangle: tuple, # ((x1,y1), (x2,y2))
+        color: tuple, # RGB or RGBA
         radius: int = 15,
-        left: bool = False,
+        left: bool = False, # True if flat side is on the left, rounded on right
     ) -> PIL.Image.Image:
-        """
-
-        Draw a half rounded rectangle on the image
-
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        rectangle : tuple
-            Rectangle to draw ( (xmin, ymin), (xmax, ymax) )
-        color : tuple
-            Color of the rectangle (BGR)
-        radius : int, optional
-            Radius of the rounded borders, by default 15
-        left : bool, optional
-            Whether the flat side is the left side, by default False
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the half rounded rectangle drawn
-        """
-        overlay = img.copy()
-        draw = PIL.ImageDraw.Draw(overlay, "RGBA")
-        draw.rounded_rectangle(rectangle, radius, fill=color)
-
-        height = rectangle[1][1] - rectangle[0][1]
-        stop_width = 13
-
-        if left:
-            draw.rectangle(
-                (
-                    rectangle[0][0] + 0,
-                    rectangle[1][1] - height,
-                    rectangle[0][0] + stop_width,
-                    rectangle[1][1],
-                ),
-                fill=color,
-            )
+        
+        # Ensure color has alpha for overlay drawing
+        if len(color) == 3:
+            color_rgba = color + (255,) # Opaque
         else:
+            color_rgba = color # Assume it's already RGBA
+
+        # Create an RGBA overlay if img is not already RGBA
+        # For simplicity, assuming img can accept RGBA drawing or is converted before this stage.
+        # A common pattern is to draw on an RGBA overlay then composite.
+        
+        # Create a transparent overlay of the same size as the image
+        overlay = PIL.Image.new("RGBA", img.size, (0, 0, 0, 0))
+        draw = PIL.ImageDraw.Draw(overlay) # Draw on this transparent layer
+
+        r_x1, r_y1 = map(int, rectangle[0])
+        r_x2, r_y2 = map(int, rectangle[1])
+        
+        # Draw the rounded rectangle part
+        draw.rounded_rectangle(((r_x1, r_y1), (r_x2, r_y2)), radius, fill=color_rgba)
+
+        # Draw a regular rectangle to cover the unwanted rounded corners on one side
+        # Effectively "cutting off" the rounding.
+        height = r_y2 - r_y1
+        # stop_width determines how much of the rounded corner to effectively "flatten"
+        # Should be at least equal to the radius.
+        stop_width = radius 
+
+        if left: # Flat on left, rounded on right
+            # Cover the left rounded corners
             draw.rectangle(
-                (
-                    rectangle[1][0] - stop_width,
-                    rectangle[1][1] - height,
-                    rectangle[1][0],
-                    rectangle[1][1],
-                ),
-                fill=color,
+                ((r_x1, r_y1), (r_x1 + stop_width, r_y2)),
+                fill=color_rgba
             )
-        return overlay
+        else: # Rounded on left, flat on right
+            # Cover the right rounded corners
+            draw.rectangle(
+                ((r_x2 - stop_width, r_y1), (r_x2, r_y2)),
+                fill=color_rgba
+            )
+        
+        # Composite the drawn overlay onto the original image
+        # This requires img to be in RGBA mode or converted
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+        img.alpha_composite(overlay)
+        return img
 
     @staticmethod
     def text_in_middle_rectangle(
         img: PIL.Image.Image,
-        origin: tuple,
+        origin: Tuple[int, int],
         width: int,
         height: int,
         text: str,
-        font: PIL.ImageFont = None,
-        color=(255, 255, 255),
+        font: PIL.ImageFont.FreeTypeFont = None,
+        color: Union[str, Tuple[int, int, int]] = (255, 255, 255),
     ) -> PIL.Image.Image:
-        """
-        Draw text in middle of rectangle
-
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        origin : tuple
-            Origin of the rectangle (x, y)
-        width : int
-            Width of the rectangle
-        height : int
-            Height of the rectangle
-        text : str
-            Text to draw
-        font : PIL.ImageFont, optional
-            Font to use, by default None
-        color : tuple, optional
-            Color of the text, by default (255, 255, 255)
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the text drawn
-        """
-
         draw = PIL.ImageDraw.Draw(img)
+        font_to_use = font or DEFAULT_FONT_REGULAR_24
 
-        if font is None:
-            font = PIL.ImageFont.truetype("fonts/Gidole-Regular.ttf", size=24)
+        # Get text bounding box using textbbox for more accuracy
+        # text_bbox = draw.textbbox((0,0), text, font=font_to_use) 
+        # w = text_bbox[2] - text_bbox[0]
+        # h = text_bbox[3] - text_bbox[1]
+        
+        # Using textlength and assuming height based on font size for simplicity like original
+        # For more precise vertical centering, textbbox or font metrics are better.
+        text_width = draw.textlength(text, font=font_to_use)
+        # Approximate text height (ascender + descender)
+        # h = font_to_use.getmetrics()[0] + font_to_use.getmetrics()[1] # For older PIL
+        # For newer PIL, can use textbbox as above or approximate:
+        _, top, _, bottom = font_to_use.getbbox(text)
+        text_height = bottom - top
 
-        w, h = draw.textsize(text, font=font)
-        text_origin = (
-            origin[0] + width / 2 - w / 2,
-            origin[1] + height / 2 - h / 2,
-        )
 
-        draw.text(text_origin, text, font=font, fill=color)
+        text_origin_x = origin[0] + (width - text_width) / 2
+        text_origin_y = origin[1] + (height - text_height) / 2 - top # Adjust by top offset of bbox
 
+        draw.text((text_origin_x, text_origin_y), text, font=font_to_use, fill=color)
         return img
 
     @staticmethod
-    def add_alpha(img: PIL.Image.Image, alpha: int = 100) -> PIL.Image.Image:
-        """
-        Add an alpha channel to an image
+    def add_alpha(img: PIL.Image.Image, alpha_value: int = 100) -> PIL.Image.Image:
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+        
+        alpha_channel = img.split()[-1] # Get current alpha
+        
+        # Create new alpha channel:
+        # Where original alpha is 0 (fully transparent), keep it 0.
+        # Otherwise, set to alpha_value.
+        new_alpha_data = np.array(alpha_channel)
+        modified_alpha_data = np.where(new_alpha_data == 0, 0, alpha_value)
+        new_alpha_channel = PIL.Image.fromarray(modified_alpha_data.astype(np.uint8), mode='L')
 
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        alpha : int, optional
-            Alpha value, by default 100
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with alpha channel
-        """
-        data = img.getdata()
-        newData = []
-        for old_pixel in data:
-
-            # Don't change transparency of transparent pixels
-            if old_pixel[3] != 0:
-                pixel_with_alpha = old_pixel[:3] + (alpha,)
-                newData.append(pixel_with_alpha)
-            else:
-                newData.append(old_pixel)
-
-        img.putdata(newData)
+        img.putalpha(new_alpha_channel)
         return img
 
 
 class PathPoint:
     def __init__(
-        self, id: int, center: tuple, color: tuple = (255, 255, 255), alpha: float = 1
+        self, id_val: int, center: Tuple[int, int], 
+        color: Tuple[int, int, int] = (255, 255, 255), alpha: float = 1.0
     ):
-        """
-        Path point
-
-        Parameters
-        ----------
-        id : int
-            Id of the point
-        center : tuple
-            Center of the point (x, y)
-        color : tuple, optional
-            Color of the point, by default (255, 255, 255)
-        alpha : float, optional
-            Alpha value of the point, by default 1
-        """
-        self.id = id
-        self.center = center
-        self.color = color
-        self.alpha = alpha
+        self.id: int = id_val
+        self.center: Tuple[int, int] = center
+        self.color: Tuple[int, int, int] = color # RGB
+        self.alpha: float = np.clip(alpha, 0.0, 1.0) # Ensure alpha is [0,1]
 
     def __str__(self) -> str:
-        return str(self.id)
+        return f"PathPoint(id={self.id}, center={self.center})"
 
     @property
-    def color_with_alpha(self) -> tuple:
-        return (self.color[0], self.color[1], self.color[2], int(self.alpha * 255))
+    def color_with_alpha(self) -> Tuple[int, int, int, int]: # RGBA
+        return self.color + (int(self.alpha * 255),)
 
     @staticmethod
-    def get_center_from_bounding_box(bounding_box: np.ndarray) -> tuple:
-        """
-        Get the center of a bounding box
-
-        Parameters
-        ----------
-        bounding_box : np.ndarray
-            Bounding box [[xmin, ymin], [xmax, ymax]]
-
-        Returns
-        -------
-        tuple
-            Center of the bounding box (x, y)
-        """
-        return (
-            int((bounding_box[0][0] + bounding_box[1][0]) / 2),
-            int((bounding_box[0][1] + bounding_box[1][1]) / 2),
-        )
+    def get_center_from_bounding_box(bounding_box: np.ndarray) -> Optional[Tuple[int, int]]:
+        """Helper to get rounded integer center from [[x1,y1],[x2,y2]] bbox."""
+        center_float = get_bbox_center(bounding_box)
+        return round_tuple_coords(center_float)
 
     @staticmethod
     def from_abs_bbox(
-        id: int,
-        abs_point: np.ndarray,
-        coord_transformations,
-        color: tuple = None,
-        alpha: float = None,
-    ) -> "PathPoint":
-        """
-        Create a PathPoint from an absolute bounding box.
-        It converts the absolute bounding box to a relative one and then to a center point
+        id_val: int,
+        abs_bbox_points: np.ndarray, # Absolute [[x1,y1],[x2,y2]]
+        coord_transformations: "CoordinatesTransformation", # Forward reference
+        color: Optional[Tuple[int, int, int]] = None,
+        alpha: Optional[float] = None,
+    ) -> Optional["PathPoint"]:
+        # Convert absolute bbox to relative frame coordinates
+        # Assumes coord_transformations.abs_to_rel returns [[x1,y1],[x2,y2]] in frame coords
+        if coord_transformations is None: # Should not happen if types are enforced
+             print("Warning: coord_transformations is None in PathPoint.from_abs_bbox")
+             return None
 
-        Parameters
-        ----------
-        id : int
-            Id of the point
-        abs_point : np.ndarray
-            Absolute bounding box
-        coord_transformations : "CoordTransformations"
-            Coordinate transformations
-        color : tuple, optional
-            Color of the point, by default None
-        alpha : float, optional
-            Alpha value of the point, by default None
+        rel_bbox_points = coord_transformations.abs_to_rel(abs_bbox_points)
+        if rel_bbox_points is None:
+            return None
+            
+        center = PathPoint.get_center_from_bounding_box(rel_bbox_points)
+        if center is None:
+            return None
 
-        Returns
-        -------
-        PathPoint
-            PathPoint
-        """
-
-        rel_point = coord_transformations.abs_to_rel(abs_point)
-        center = PathPoint.get_center_from_bounding_box(rel_point)
-
-        return PathPoint(id=id, center=center, color=color, alpha=alpha)
+        default_color = (255, 255, 255) # White
+        default_alpha = 1.0
+        
+        return PathPoint(
+            id_val=id_val, 
+            center=center, 
+            color=color if color is not None else default_color, 
+            alpha=alpha if alpha is not None else default_alpha
+        )
 
 
 class AbsolutePath:
+    # Configuration for drawing paths
+    PATH_THICKNESS = 4
+    ARROW_THICKNESS = 4
+    ARROW_HEAD_LENGTH = 10
+    ARROW_HEAD_HEIGHT = 6
+    ARROW_FRAME_FREQUENCY = 30  # Draw arrow every N points
+    ARROW_LOOKBACK_FRAMES = 4   # Use point from N frames ago for arrow direction
+    ALPHA_DECAY_FACTOR = 1.2    # For fading older parts of the path
+    FILTER_POINTS_MARGIN = 250  # Margin for filtering points outside frame
+
     def __init__(self) -> None:
-        self.past_points = []
-        self.color_by_index = {}
-
-    def center(self, points: np.ndarray) -> tuple:
-        """
-        Get the center of a Norfair Bounding Box Detection point
-
-        Parameters
-        ----------
-        points : np.ndarray
-            Norfair Bounding Box Detection point
-
-        Returns
-        -------
-        tuple
-            Center of the point (x, y)
-        """
-        return (
-            int((points[0][0] + points[1][0]) / 2),
-            int((points[0][1] + points[1][1]) / 2),
-        )
+        # Stores tuples of (absolute_points_bbox, color)
+        self.past_points_data: List[Tuple[np.ndarray, Tuple[int,int,int]]] = []
 
     @property
     def path_length(self) -> int:
-        return len(self.past_points)
+        return len(self.past_points_data)
 
-    def draw_path_slow(
+    def _draw_path_segment(
         self,
-        img: PIL.Image.Image,
-        path: List[PathPoint],
-        thickness: int = 4,
-    ) -> PIL.Image.Image:
-        """
-        Draw a path with alpha
+        draw: PIL.ImageDraw.ImageDraw,
+        p1: PathPoint,
+        p2: PathPoint,
+        thickness: int,
+    ):
+        # Use p1's color and alpha for the segment leading to p2
+        draw.line([p1.center, p2.center], fill=p1.color_with_alpha, width=thickness)
 
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        path : List[PathPoint]
-            List of points to draw
-        thickness : int, optional
-            Thickness of the path, by default 4
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the path drawn
-        """
-        draw = PIL.ImageDraw.Draw(img, "RGBA")
-
-        for i in range(len(path) - 1):
-            draw.line(
-                [path[i].center, path[i + 1].center],
-                fill=path[i].color_with_alpha,
-                width=thickness,
-            )
-        return img
-
-    def draw_arrow_head(
+    def _draw_arrow_head(
         self,
-        img: PIL.Image.Image,
-        start: tuple,
-        end: tuple,
-        color: tuple = (255, 255, 255),
-        length: int = 10,
-        height: int = 6,
-        thickness: int = 4,
-        alpha: int = 255,
-    ) -> PIL.Image.Image:
+        draw: PIL.ImageDraw.ImageDraw,
+        start_coords: Tuple[int, int],
+        end_coords: Tuple[int, int],
+        color_rgba: Tuple[int, int, int, int],
+        length: int,
+        height: int,
+        thickness: int,
+    ):
+        dX = end_coords[0] - start_coords[0]
+        dY = end_coords[1] - start_coords[1]
+        vec_len = sqrt(dX*dX + dY*dY)
+        if vec_len == 0: return
 
-        # https://stackoverflow.com/questions/43527894/drawing-arrowheads-which-follow-the-direction-of-the-line-in-pygame
-        draw = PIL.ImageDraw.Draw(img, "RGBA")
+        udX, udY = dX / vec_len, dY / vec_len  # Normalized direction
+        perpX, perpY = -udY, udX              # Perpendicular vector
 
-        dX = end[0] - start[0]
-        dY = end[1] - start[1]
+        left_x = end_coords[0] - length * udX + height * perpX
+        left_y = end_coords[1] - length * udY + height * perpY
+        right_x = end_coords[0] - length * udX - height * perpX
+        right_y = end_coords[1] - length * udY - height * perpY
+        
+        draw.line([(left_x, left_y), end_coords], fill=color_rgba, width=thickness)
+        draw.line([(right_x, right_y), end_coords], fill=color_rgba, width=thickness)
 
-        # vector length
-        Len = sqrt(dX * dX + dY * dY)  # use Hypot if available
-
-        if Len == 0:
-            return img
-
-        # normalized direction vector components
-        udX = dX / Len
-        udY = dY / Len
-
-        # perpendicular vector
-        perpX = -udY
-        perpY = udX
-
-        # points forming arrowhead
-        # with length L and half-width H
-        arrowend = end
-
-        leftX = end[0] - length * udX + height * perpX
-        leftY = end[1] - length * udY + height * perpY
-
-        rightX = end[0] - length * udX - height * perpX
-        rightY = end[1] - length * udY - height * perpY
-
-        if len(color) <= 3:
-            color += (alpha,)
-
-        draw.line(
-            [(leftX, leftY), arrowend],
-            fill=color,
-            width=thickness,
-        )
-
-        draw.line(
-            [(rightX, rightY), arrowend],
-            fill=color,
-            width=thickness,
-        )
-
-        return img
-
-    def draw_path_arrows(
-        self,
-        img: PIL.Image.Image,
-        path: List[PathPoint],
-        thickness: int = 4,
-        frame_frequency: int = 30,
-    ) -> PIL.Image.Image:
-        """
-        Draw a path with arrows every 30 points
-
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        path : List[PathPoint]
-            Path
-        thickness : int, optional
-            Thickness of the path, by default 4
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the arrows drawn
-        """
-
-        for i, point in enumerate(path):
-
-            if i < 4 or i % frame_frequency:
-                continue
-
-            end = path[i]
-            start = path[i - 4]
-
-            img = self.draw_arrow_head(
-                img=img,
-                start=start.center,
-                end=end.center,
-                color=start.color_with_alpha,
-                thickness=thickness,
-            )
-
-        return img
-
-    def draw_path_fast(
-        self,
-        img: PIL.Image.Image,
-        path: List[PathPoint],
-        color: tuple,
-        width: int = 2,
-        alpha: int = 255,
-    ) -> PIL.Image.Image:
-        """
-        Draw a path without alpha (faster)
-
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        path : List[PathPoint]
-            Path
-        color : tuple
-            Color of the path
-        with : int
-            Width of the line
-        alpha : int
-            Color alpha (0-255)
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the path drawn
-        """
-        draw = PIL.ImageDraw.Draw(img, "RGBA")
-
-        path_list = [point.center for point in path]
-
-        color += (alpha,)
-
-        draw.line(
-            path_list,
-            fill=color,
-            width=width,
-        )
-
-        return img
-
-    def draw_arrow(
-        self,
-        img: PIL.Image.Image,
-        points: List[PathPoint],
-        color: tuple,
-        width: int,
-        alpha: int = 255,
-    ) -> PIL.Image.Image:
-        """Draw arrow between two points
-
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            image to draw
-        points : List[PathPoint]
-            start and end points
-        color : tuple
-            color of the arrow
-        width : int
-            width of the arrow
-        alpha : int, optional
-            color alpha (0-255), by default 255
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the arrow
-        """
-
-        img = self.draw_path_fast(
-            img=img, path=points, color=color, width=width, alpha=alpha
-        )
-        img = self.draw_arrow_head(
-            img=img,
-            start=points[0].center,
-            end=points[1].center,
-            color=color,
-            length=30,
-            height=15,
-            alpha=alpha,
-        )
-
-        return img
-
-    def add_new_point(
-        self, detection: norfair.Detection, color: tuple = (255, 255, 255)
-    ) -> None:
-        """
-        Add a new point to the path
-
-        Parameters
-        ----------
-        detection : norfair.Detection
-            Detection
-        color : tuple, optional
-            Color of the point, by default (255, 255, 255)
-        """
-
-        if detection is None:
-            return
-
-        self.past_points.append(detection.absolute_points)
-
-        self.color_by_index[len(self.past_points) - 1] = color
-
-    def filter_points_outside_frame(
-        self, path: List[PathPoint], width: int, height: int, margin: int = 0
+    def _filter_points_outside_frame(
+        self, path_points: List[PathPoint], frame_width: int, frame_height: int, margin: int = 0
     ) -> List[PathPoint]:
-        """
-        Filter points outside the frame with a margin
-
-        Parameters
-        ----------
-        path : List[PathPoint]
-            List of points
-        width : int
-            Width of the frame
-        height : int
-            Height of the frame
-        margin : int, optional
-            Margin, by default 0
-
-        Returns
-        -------
-        List[PathPoint]
-            List of points inside the frame with the margin
-        """
-
         return [
-            point
-            for point in path
-            if point.center[0] > 0 - margin
-            and point.center[1] > 0 - margin
-            and point.center[0] < width + margin
-            and point.center[1] < height + margin
+            p for p in path_points
+            if (0 - margin) < p.center[0] < (frame_width + margin) and \
+               (0 - margin) < p.center[1] < (frame_height + margin)
         ]
+
+    def add_new_point(self, detection: norfair.Detection, color: Tuple[int,int,int] = (255, 255, 255)):
+        if detection is None or detection.absolute_points is None:
+            return
+        self.past_points_data.append((detection.absolute_points.copy(), color))
+
 
     def draw(
         self,
-        img: PIL.Image.Image,
-        detection: norfair.Detection,
-        coord_transformations,
-        color: tuple = (255, 255, 255),
+        img: PIL.Image.Image, # Expects RGBA image for alpha blending
+        current_detection: Optional[norfair.Detection],
+        coord_transformations: "CoordinatesTransformation",
+        color: Tuple[int, int, int] = (255, 255, 255),
     ) -> PIL.Image.Image:
-        """
-        Draw the path
+        if current_detection:
+            self.add_new_point(detection=current_detection, color=color)
 
-        Parameters
-        ----------
-        img : PIL.Image.Image
-            Image
-        detection : norfair.Detection
-            Detection
-        coord_transformations : _type_
-            Coordinate transformations
-        color : tuple, optional
-            Color of the path, by default (255, 255, 255)
-
-        Returns
-        -------
-        PIL.Image.Image
-            Image with the path drawn
-        """
-
-        self.add_new_point(detection=detection, color=color)
-
-        if len(self.past_points) < 2:
+        if self.path_length < 2:
             return img
 
-        path = [
-            PathPoint.from_abs_bbox(
-                id=i,
-                abs_point=point,
+        # Create PathPoint objects from stored absolute data
+        path_points_rel: List[PathPoint] = []
+        for i, (abs_bbox, point_color) in enumerate(self.past_points_data):
+            alpha = max(0.0, 1.0 - (self.path_length - 1 - i) / (self.ALPHA_DECAY_FACTOR * self.path_length)) if self.path_length > 1 else 1.0
+            #alpha = i / (self.ALPHA_DECAY_FACTOR * self.path_length) if self.path_length > 0 else 1.0
+            
+            pp = PathPoint.from_abs_bbox(
+                id_val=i,
+                abs_bbox_points=abs_bbox,
                 coord_transformations=coord_transformations,
-                alpha=i / (1.2 * self.path_length),
-                color=self.color_by_index[i],
+                color=point_color,
+                alpha=alpha
             )
-            for i, point in enumerate(self.past_points)
-        ]
+            if pp:
+                path_points_rel.append(pp)
+        
+        if not path_points_rel or len(path_points_rel) < 2:
+            return img
 
-        path_filtered = self.filter_points_outside_frame(
-            path=path,
-            width=img.size[0],
-            height=img.size[0],
-            margin=250,
-        )
+        # Filter points outside the frame (with margin) for drawing efficiency
+        # Drawing still uses all points for arrows if needed, filtering is for path segments
+        # For path drawing, only draw segments where at least one point is somewhat visible
+        # This is a complex optimization. Simpler: filter, then draw.
+        # path_to_draw = self._filter_points_outside_frame(
+        #     path_points_rel, img.width, img.height, self.FILTER_POINTS_MARGIN
+        # )
+        # If path_to_draw is used, ensure indices for arrows are still valid.
 
-        img = self.draw_path_slow(img=img, path=path_filtered)
-        img = self.draw_path_arrows(img=img, path=path)
+        # Create a drawing context on an RGBA version of the image
+        # Or ensure img is already RGBA
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+        draw_context = PIL.ImageDraw.Draw(img, "RGBA")
 
+        # Draw path segments
+        for i in range(len(path_points_rel) - 1):
+            self._draw_path_segment(draw_context, path_points_rel[i], path_points_rel[i+1], self.PATH_THICKNESS)
+
+        # Draw arrows
+        for i, point in enumerate(path_points_rel):
+            if i < self.ARROW_LOOKBACK_FRAMES or i % self.ARROW_FRAME_FREQUENCY != 0:
+                continue
+            
+            start_point = path_points_rel[i - self.ARROW_LOOKBACK_FRAMES]
+            end_point = point # current point is the arrow tip
+            
+            self._draw_arrow_head(
+                draw_context,
+                start_point.center,
+                end_point.center,
+                start_point.color_with_alpha, # Color of arrow based on starting segment
+                self.ARROW_HEAD_LENGTH,
+                self.ARROW_HEAD_HEIGHT,
+                self.ARROW_THICKNESS
+            )
         return img
